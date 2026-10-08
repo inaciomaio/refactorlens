@@ -18,7 +18,8 @@ side-by-side diff with lessons. `cargo test`, `cargo clippy` and `cargo fmt
 - Built-in demo example and its recorded answer (`src/demo.rs`).
 - Environment/flag config (`src/config.rs`).
 - Build-free UI: HTML, CSS, JS, self-hosted fonts and highlight.js (`ui/`).
-- Nix flake with a `devShells.default`, a `packages.default` and `apps.default`.
+- Nix flake with a `devShells.default`, a `packages.default` and `apps.default`, verified on NixOS: `nix develop`, `nix build` (including the sandboxed check phase with all tests) and the built binary serving HTTP all work.
+- `flake.lock` committed, pinning nixpkgs and flake-utils.
 - CI workflow running fmt, clippy, tests and `node --check`.
 - Project bootstrap docs: `flake.nix`, `shell.nix`, `.envrc`, `README.md`,
   `AGENTS.md`, `CLAUDE.md`, `NEXTSTEPS.md`, `.gitignore`.
@@ -29,8 +30,6 @@ Nothing is half-finished at the moment.
 
 ## Next
 
-- Confirm `nix develop` and `nix build` succeed on a real NixOS machine and note
-  the result here. (The bootstrap author could not run Nix in this environment.)
 - Add word-level highlighting inside changed diff lines (see `CONTRIBUTING.md`).
 - Add follow-up questions about a lesson.
 - Stream the summary while the model is still writing.
