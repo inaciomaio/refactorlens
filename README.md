@@ -18,17 +18,35 @@ RefactorLens is a teaching tool, not just a rewriter. A language model improves 
 - **Your choice of model.** Ollama (local, free, private), Anthropic Claude, or any OpenAI-compatible server (OpenAI, OpenRouter, LM Studio, llama.cpp, vLLM…).
 - **One small binary.** The interface, fonts and syntax highlighter are built in. Nothing to install, and it works offline with Ollama.
 
-## Quick start
+## Tech stack
 
-You need [Rust](https://rustup.rs) 1.85 or newer.
+- **Rust** (edition 2024), `axum` for the HTTP server, `tokio` for async I/O.
+- **Plain HTML/CSS/JavaScript** in `ui/`, baked into the binary with
+  `include_bytes!`. No bundler, no framework, no build step.
+- **Nix** for the development environment. All tools (Rust toolchain plus
+  `rust-analyzer`, `clippy`, `rustfmt` and `node`) come from the flake.
+
+## Prerequisites
+
+- [Nix](https://nixos.org/download) with flakes enabled, or NixOS (flakes are on
+  by default there).
+- Optional: [direnv](https://direnv.net) with the `nix-direnv` integration, to
+  load the dev shell automatically when you `cd` into the project.
+
+## Setup
 
 ```sh
-git clone https://github.com/YOUR-NAME/refactorlens
-cd refactorlens
+# 1. Get the dev shell: Rust, cargo, clippy, rustfmt, rust-analyzer, node.
+nix develop        # or run `direnv allow` once if you use direnv
+
+# 2. Nothing to install. Dependencies come from Cargo.lock; the shell has the
+#    rest. Then build and run:
 cargo run --release
 ```
 
 Open <http://127.0.0.1:7878>. Press **Try the example** and then **Improve my code** to see the whole flow without any model.
+
+> Outside Nix? Any Rust 1.85+ toolchain works: `cargo run --release`.
 
 ### Pick a model
 
@@ -59,8 +77,9 @@ For LM Studio use `http://127.0.0.1:1234/v1`; for llama.cpp's server, `http://12
 ### NixOS
 
 ```sh
+nix develop        # shell with cargo, rustc, clippy, rustfmt, rust-analyzer, node
+nix build          # build the release binary into ./result
 nix run .          # build and run
-nix develop        # shell with cargo, rustc, clippy and rust-analyzer
 ```
 
 ## Configuration
@@ -103,6 +122,22 @@ browser ──► POST /api/improve ──► prompt.rs builds a "teacher" promp
 | `src/analysis.rs` | JSON extraction, snippet location, diffing, with unit tests |
 | `src/demo.rs` | The built-in example and its recorded answer |
 | `ui/` | Plain HTML, CSS and JavaScript. No build step. |
+
+## Project structure
+
+```
+src/          Rust backend: server, providers, prompt, analysis, demo
+ui/           Frontend (HTML/CSS/JS), baked into the binary
+ui/vendor/    Self-hosted fonts and highlight.js
+licenses/     Licenses for the bundled third-party assets
+docs/         Screenshots and other docs
+.github/      CI workflow
+flake.nix     Dev shell and package definition
+shell.nix     Fallback for non-flake users (reuses the flake)
+.envrc        direnv hook: `use flake`
+AGENTS.md     Instructions for AI agents working in this repo
+NEXTSTEPS.md  Short status and to-do list
+```
 
 A few design choices worth knowing:
 
