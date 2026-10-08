@@ -156,6 +156,51 @@ pub fn extract_json(reply: &str) -> Result<ModelReply, String> {
     Err("the JSON object was never closed (the reply may have been cut off)".to_string())
 }
 
+/// Pull the text of the `summary` field out of a reply that is still arriving.
+///
+/// While the model writes, its reply is not valid JSON yet, so this reads the
+/// characters after `"summary": "` and returns them, stopping at the closing
+/// quote. It tolerates a missing closing quote, because that is the normal
+/// case while the summary is still being written.
+///
+/// Returns None when the summary has not started yet.
+pub fn partial_summary(reply_so_far: &str) -> Option<String> {
+    let key = reply_so_far.find("\"summary\"")?;
+    let after_key = &reply_so_far[key + "\"summary\"".len()..];
+    let colon = after_key.find(':')?;
+    let after_colon = after_key[colon + 1..].trim_start();
+    let rest = after_colon.strip_prefix('"')?;
+
+    // Read to the closing quote, honouring backslash escapes, and unstuff them
+    // so the preview matches what the parsed JSON will say.
+    let mut out = String::new();
+    let mut chars = rest.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => break,
+            '\\' => match chars.next() {
+                Some('n') => out.push('\n'),
+                Some('t') => out.push('\t'),
+                Some('r') => out.push('\r'),
+                Some('u') => {
+                    // \uXXXX: copy the escape through rather than guessing.
+                    out.push('\\');
+                    out.push('u');
+                    for _ in 0..4 {
+                        if let Some(h) = chars.next() {
+                            out.push(h);
+                        }
+                    }
+                }
+                Some(other) => out.push(other),
+                None => break,
+            },
+            other => out.push(other),
+        }
+    }
+    Some(out)
+}
+
 /// Locate a snippet inside some code. Returns 1-based inclusive line numbers.
 ///
 /// Matching ignores indentation and blank lines, because models often
@@ -386,5 +431,39 @@ mod tests {
         assert_eq!(normalize_category("Performance"), "performance");
         assert_eq!(normalize_category("Modern Python idiom"), "modern-syntax");
         assert_eq!(normalize_category("??"), "readability");
+    }
+
+    #[test]
+    fn partial_summary_reads_a_finished_field() {
+        let reply = r#"{"language": "python", "summary": "A short lesson.", "improved_code": "x"}"#;
+        assert_eq!(partial_summary(reply).as_deref(), Some("A short lesson."));
+    }
+
+    #[test]
+    fn partial_summary_tolerates_an_unfinished_field() {
+        // This is the normal case while the model is still writing.
+        let reply = r#"{"language": "python", "summary": "A short less"#;
+        assert_eq!(partial_summary(reply).as_deref(), Some("A short less"));
+    }
+
+    #[test]
+    fn partial_summary_is_none_before_the_field() {
+        assert_eq!(partial_summary(r#"{"language": "py"#), None);
+    }
+
+    #[test]
+    fn partial_summary_unescapes_and_stops_at_the_close_quote() {
+        let reply = r#"{"summary": "line one\nline \"two\"", "improved_code": "nope"}"#;
+        assert_eq!(
+            partial_summary(reply).as_deref(),
+            Some("line one\nline \"two\"")
+        );
+    }
+
+    #[test]
+    fn partial_summary_ignores_a_brace_before_the_field() {
+        // A meta object earlier in the reply must not confuse the reader.
+        let reply = r#"{"meta": {"summary": "wrong"}, "summary": "right"}"#;
+        assert_eq!(partial_summary(reply).as_deref(), Some("wrong"));
     }
 }

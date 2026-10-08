@@ -110,7 +110,8 @@ Rules:
 - {level}
 
 Reply with ONLY a JSON object. No markdown, no code fences, no text before or after it.
-The JSON object has exactly this shape:
+Write the fields in exactly the order below. The student sees `summary` as you
+write it, so put the useful part of it first and keep it to 2-3 sentences.
 {{
   "language": "the language name, lowercase, e.g. python",
   "summary": "2-3 sentences: what the code does and the overall direction of the improvements",
@@ -169,6 +170,32 @@ mod tests {
     fn library_toggle_changes_the_rules() {
         assert!(system_prompt(&opts(false)).contains("Do NOT add any"));
         assert!(system_prompt(&opts(true)).contains("You MAY introduce"));
+    }
+
+    #[test]
+    fn prompt_embeds_a_valid_json_skeleton() {
+        // The skeleton is written as a raw string inside a format!, where
+        // braces must be doubled. This catches the escaping slipping.
+        let p = system_prompt(&opts(false));
+        let start = p
+            .find("{\n  \"language\"")
+            .expect("no JSON skeleton in the prompt");
+        let end = p[start..].rfind('}').expect("skeleton is not closed") + start + 1;
+        let skeleton = &p[start..end];
+        serde_json::from_str::<serde_json::Value>(skeleton)
+            .expect("the JSON skeleton in the prompt is not valid JSON");
+    }
+
+    #[test]
+    fn summary_is_asked_for_before_the_rest() {
+        // Streaming shows the summary first, so it must come before the code.
+        let p = system_prompt(&opts(false));
+        let summary = p.find("\"summary\"").expect("no summary field");
+        let code = p.find("\"improved_code\"").expect("no improved_code field");
+        assert!(
+            summary < code,
+            "summary should be requested before improved_code"
+        );
     }
 
     #[test]

@@ -411,6 +411,17 @@ fieldset.option legend { margin-bottom: 8px; }
 }
 @keyframes sweep { from { background-position: 100% 0; } to { background-position: -50% 0; } }
 
+/* The summary, written out as the model produces it. */
+.streaming {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--ink);
+  font-size: var(--t-sm);
+  line-height: 1.5;
+  max-height: 6.5em;
+  overflow-y: auto;
+}
+
 .error {
   border-left: 3px solid var(--del-ink);
   background: var(--del-bg);

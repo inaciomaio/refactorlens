@@ -104,6 +104,57 @@ const reduceMotion = () => window.matchMedia("(prefers-reduced-motion: reduce)")
 const narrow = () => window.matchMedia("(max-width: 1080px)").matches;
 
 // ---------------------------------------------------------------------------
+// Server-sent events, read by hand so the page needs no extra library.
+// ---------------------------------------------------------------------------
+
+/// POST to an SSE endpoint and hand each event to `onEvent`.
+///
+/// `fetch` is used rather than `EventSource` because the endpoint is a POST and
+/// needs the usual headers; the SSE framing is simple enough to parse.
+async function apiStream(path, body, { signal, onEvent }) {
+  const res = await fetch("/api" + path, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-refactorlens": "1" },
+    body: JSON.stringify(body),
+    signal,
+  });
+  if (!res.ok) {
+    let err = null;
+    try { err = await res.json(); } catch { /* not JSON */ }
+    throw new Error((err && err.error) || `The server answered ${res.status}.`);
+  }
+  if (!res.body) throw new Error("This browser can't read streaming replies.");
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    // Events are separated by a blank line.
+    let sep;
+    while ((sep = buf.indexOf("\n\n")) !== -1) {
+      const raw = buf.slice(0, sep);
+      buf = buf.slice(sep + 2);
+      const ev = parseSse(raw);
+      if (ev) onEvent(ev);
+    }
+  }
+}
+
+/// One SSE block, e.g. "event: summary\ndata: Hello". Data lines join with \n.
+function parseSse(raw) {
+  let event = "message";
+  const data = [];
+  for (const line of raw.split("\n")) {
+    if (line.startsWith("event:")) event = line.slice(6).trim();
+    else if (line.startsWith("data:")) data.push(line.slice(5).replace(/^ /, ""));
+  }
+  return data.length ? { event, data: data.join("\n") } : null;
+}
+
+// ---------------------------------------------------------------------------
 // Provider settings
 // ---------------------------------------------------------------------------
 function providerModel(kind) {
@@ -320,6 +371,7 @@ function setBusy(busy, label = "") {
   $("#progress").hidden = !busy;
   clearInterval(setBusy.timer);
   if (busy) {
+    setStreamText("");
     const started = Date.now();
     const tick = () => {
       const secs = Math.round((Date.now() - started) / 1000);
@@ -328,6 +380,15 @@ function setBusy(busy, label = "") {
     tick();
     setBusy.timer = setInterval(tick, 1000);
   }
+}
+
+/// Show the summary as it arrives, above the timer. Empty when nothing has
+/// streamed yet, so the plain progress line shows on its own.
+function setStreamText(text) {
+  const box = $("#streaming");
+  if (!box) return;
+  box.hidden = !text;
+  box.textContent = text;
 }
 
 function showError(message) {
@@ -358,16 +419,46 @@ async function run() {
   const who = kind === "demo" ? "Loading the recorded example." : `Waiting for ${providerModel(kind) || PROVIDER_LABELS[kind]}.`;
   setBusy(true, who);
   state.abort = new AbortController();
+
+  let result = null;
+  let streamErr = null;
   try {
-    const result = await api("/improve", { method: "POST", body: JSON.stringify(body), signal: state.abort.signal });
-    showResult(result);
+    await apiStream("/improve/stream", body, {
+      signal: state.abort.signal,
+      onEvent: (ev) => {
+        if (ev.event === "summary") setStreamText(ev.data);
+        else if (ev.event === "done") result = JSON.parse(ev.data);
+        else if (ev.event === "error") streamErr = new Error(ev.data);
+      },
+    });
   } catch (err) {
-    if (err.name === "AbortError") showError("Cancelled.");
-    else showError(err.message);
-  } finally {
-    setBusy(false);
-    state.abort = null;
+    // A failure before any text arrived is worth retrying the plain way; once
+    // the summary is on screen, a stream error is the real error.
+    if (err.name === "AbortError") {
+      showError("Cancelled.");
+      setBusy(false);
+      state.abort = null;
+      return;
+    }
+    streamErr = err;
   }
+
+  if (!result && !streamErr) {
+    // Streaming finished without a usable answer (an old browser, or a proxy
+    // that buffered the response). Fall back to the one-shot endpoint.
+    try {
+      result = await api("/improve", { method: "POST", body: JSON.stringify(body), signal: state.abort.signal });
+    } catch (err) {
+      streamErr = err;
+    }
+  }
+
+  if (result) showResult(result);
+  else if (streamErr && streamErr.name === "AbortError") showError("Cancelled.");
+  else showError((streamErr && streamErr.message) || "The model's answer wasn't usable. Try again.");
+
+  setBusy(false);
+  state.abort = null;
 }
 
 // ---------------------------------------------------------------------------

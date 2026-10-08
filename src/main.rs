@@ -16,11 +16,14 @@ use axum::{
     extract::{DefaultBodyLimit, Request, State},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     middleware::{self, Next},
-    response::{IntoResponse, Response},
+    response::{IntoResponse, Response, Sse, sse::Event},
     routing::{get, post},
 };
+use futures_util::stream::unfold;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::convert::Infallible;
+use tokio::sync::mpsc;
 
 use crate::{
     analysis::{Change, Dependency, Diff},
@@ -63,6 +66,7 @@ async fn main() {
         .route("/config", get(get_config))
         .route("/ollama/models", get(get_ollama_models))
         .route("/improve", post(improve))
+        .route("/improve/stream", post(improve_stream))
         .layer(middleware::from_fn(guard_api));
 
     let app = Router::new()
@@ -274,16 +278,33 @@ async fn improve(State(s): State<Shared>, Json(req): Json<ImproveRequest>) -> Re
             );
         }
     };
+    match build_response(&code, parsed, &model, req.options.allow_libraries, started) {
+        Ok(r) => Json(r).into_response(),
+        Err(e) => error(StatusCode::BAD_GATEWAY, e),
+    }
+}
+
+/// Turn a raw model reply into everything the page needs.
+///
+/// Split out from `improve` so the streaming handler can reuse it: both go from
+/// "the model said this" to "here is the diff and the lessons".
+fn build_response(
+    code: &str,
+    parsed: analysis::ModelReply,
+    model: &str,
+    allow_libraries: bool,
+    started: Instant,
+) -> Result<ImproveResponse, String> {
     let improved = analysis::normalize(&parsed.improved_code);
     if improved.trim().is_empty() {
-        return error(
-            StatusCode::BAD_GATEWAY,
-            "The model didn't return any improved code. Try again, or try a stronger model.",
+        return Err(
+            "The model didn't return any improved code. Try again, or try a stronger model."
+                .to_string(),
         );
     }
 
-    let diff = analysis::diff(&code, &improved);
-    let changes = analysis::resolve_changes(&code, &improved, parsed.changes);
+    let diff = analysis::diff(code, &improved);
+    let changes = analysis::resolve_changes(code, &improved, parsed.changes);
     tracing::info!(
         model,
         changes = changes.len(),
@@ -292,25 +313,24 @@ async fn improve(State(s): State<Shared>, Json(req): Json<ImproveRequest>) -> Re
         "improved code"
     );
 
-    Json(ImproveResponse {
+    Ok(ImproveResponse {
         language: parsed.language.to_lowercase(),
         summary: parsed.summary,
-        original_code: code,
+        original_code: code.to_string(),
         improved_code: improved,
         changes,
         // Respect the toggle even if the model ignored the instruction.
-        dependencies: if req.options.allow_libraries {
+        dependencies: if allow_libraries {
             parsed.dependencies
         } else {
             Vec::new()
         },
         behavior_changes: parsed.behavior_changes,
         diff,
-        model,
+        model: model.to_string(),
         elapsed_ms: started.elapsed().as_millis(),
-        allow_libraries: req.options.allow_libraries,
+        allow_libraries,
     })
-    .into_response()
 }
 
 /// Ask the model, and give it one chance to fix a reply that isn't valid JSON.
@@ -347,4 +367,144 @@ async fn ask_model(
         }
     }
     unreachable!("the loop always returns")
+}
+
+// ---------------------------------------------------------------------------
+// Streaming: the summary appears while the model is still writing.
+//
+// Only the summary is streamed. The rest of the reply is JSON that cannot be
+// read until it is complete, and the lessons are the point of the tool, so the
+// stream exists to show that work is happening, not to replace the final
+// result. The last event carries the same payload as POST /api/improve.
+// ---------------------------------------------------------------------------
+async fn improve_stream(State(s): State<Shared>, Json(req): Json<ImproveRequest>) -> Response {
+    let code = analysis::normalize(&req.code);
+    if code.trim().is_empty() {
+        return error(StatusCode::BAD_REQUEST, "Paste some code first.");
+    }
+    if code.chars().count() > MAX_CODE_CHARS {
+        return error(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "That's more than {MAX_CODE_CHARS} characters. Try one file or one function at a time."
+            ),
+        );
+    }
+
+    let (tx, rx) = mpsc::channel::<Result<Event, Infallible>>(8);
+    let shared = s.clone();
+    tokio::spawn(async move {
+        let started = Instant::now();
+        let out = run_stream(&shared, req, code, &tx, started).await;
+        if let Err(msg) = out {
+            let _ = tx.send(Ok(Event::default().event("error").data(msg))).await;
+        }
+    });
+
+    let stream = unfold(rx, |mut rx| async move {
+        rx.recv().await.map(|item| (item, rx))
+    });
+    Sse::new(stream)
+        .keep_alive(axum::response::sse::KeepAlive::default())
+        .into_response()
+}
+
+/// Do the work and push events to the channel. Every early return sends its
+/// message through `run_stream`'s error, which the caller turns into an event.
+async fn run_stream(
+    s: &AppState,
+    req: ImproveRequest,
+    code: String,
+    tx: &mpsc::Sender<Result<Event, Infallible>>,
+    started: Instant,
+) -> Result<(), String> {
+    // Demo mode has no model to stream from; send the summary in one piece.
+    if req.provider.kind == ProviderKind::Demo {
+        if !demo::is_sample(&code) {
+            return Err(
+                "Demo mode only knows the built-in example. Load it with \"Try the example\", or pick a real model in settings."
+                    .to_string(),
+            );
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+        let raw = demo::reply();
+        let parsed = analysis::extract_json(&raw)?;
+        let _ = tx
+            .send(Ok(Event::default()
+                .event("summary")
+                .data(parsed.summary.clone())))
+            .await;
+        return finish(
+            tx,
+            &code,
+            parsed,
+            "demo",
+            req.options.allow_libraries,
+            started,
+        )
+        .await;
+    }
+
+    let system = prompt::system_prompt(&req.options);
+    let messages = vec![Msg::user(prompt::user_prompt(&code, &req.options))];
+
+    // The delta callback runs on the same task as the provider stream. It sends
+    // the whole summary so far each time more text arrives, so the page can
+    // simply replace what it shows.
+    let mut shown = String::new();
+    let mut last_sent = String::new();
+    let mut on_delta = |piece: &str| {
+        shown.push_str(piece);
+        if let Some(text) = analysis::partial_summary(&shown) {
+            if text != last_sent {
+                last_sent = text.clone();
+                // try_send: a full channel means the page is behind, and we would
+                // rather drop a preview frame than block the model request.
+                let _ = tx.try_send(Ok(Event::default().event("summary").data(text)));
+            }
+        }
+    };
+
+    let done = llm::complete_streaming(
+        &s.http,
+        &req.provider,
+        &s.settings,
+        &system,
+        &messages,
+        &mut on_delta,
+    )
+    .await
+    .map_err(|e| e.to_string());
+    let done = done?;
+
+    if done.truncated {
+        return Err(
+            "The model ran out of room before finishing. Try a shorter piece of code.".to_string(),
+        );
+    }
+    let parsed = analysis::extract_json(&done.text)?;
+    finish(
+        tx,
+        &code,
+        parsed,
+        &done.model,
+        req.options.allow_libraries,
+        started,
+    )
+    .await
+}
+
+/// Send the final event: the same JSON shape as a normal run.
+async fn finish(
+    tx: &mpsc::Sender<Result<Event, Infallible>>,
+    code: &str,
+    parsed: analysis::ModelReply,
+    model: &str,
+    allow_libraries: bool,
+    started: Instant,
+) -> Result<(), String> {
+    let response = build_response(code, parsed, model, allow_libraries, started)?;
+    let body = serde_json::to_string(&response).map_err(|e| e.to_string())?;
+    let _ = tx.send(Ok(Event::default().event("done").data(body))).await;
+    Ok(())
 }
