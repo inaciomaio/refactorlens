@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RefactorLens</title>
+  <meta name="description" content="Paste code, get a modern version, and learn why every change was made.">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/vendor/highlight.min.js" defer></script>
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="wordmark" href="/" aria-label="RefactorLens home">
+      <svg class="wordmark-icon" viewBox="0 0 32 32" aria-hidden="true">
+        <circle cx="13" cy="13" r="9" />
+        <path d="M20 20 L28 28" />
+        <path class="wm-mark" d="M8 13 H18" />
+      </svg>
+      <span>RefactorLens</span>
+    </a>
+    <button class="model-chip" id="open-settings" type="button" aria-haspopup="dialog">
+      <span class="model-dot" id="model-dot" aria-hidden="true"></span>
+      <span id="model-label">Choose a model</span>
+    </button>
+  </header>
+
+  <main>
+    <!-- Step 1: write or paste code -->
+    <section class="compose" id="compose" aria-labelledby="compose-title">
+      <div class="compose-editor">
+        <div class="compose-head">
+          <h1 id="compose-title">Paste code you want to learn from</h1>
+          <p class="lede">You get a modern version, side by side with yours, and a short lesson on every change.</p>
+        </div>
+        <div class="editor-meta">
+          <label class="field-inline">
+            <span>Language</span>
+            <select id="language">
+              <option value="auto">Detect automatically</option>
+              <option>Python</option><option>JavaScript</option><option>TypeScript</option>
+              <option>Rust</option><option>Go</option><option>Java</option><option>Kotlin</option>
+              <option>C</option><option>C++</option><option>C#</option><option>Swift</option>
+              <option>PHP</option><option>Ruby</option><option>Lua</option><option>Bash</option>
+              <option>SQL</option>
+            </select>
+          </label>
+          <label class="field-inline">
+            <span>Version</span>
+            <input id="target" type="text" placeholder="Latest, or e.g. Python 3.12" autocomplete="off" spellcheck="false">
+          </label>
+        </div>
+        <div class="editor-wrap">
+          <textarea id="code" spellcheck="false" autocapitalize="off" autocomplete="off"
+            aria-label="Your code" aria-describedby="editor-hint"
+            placeholder="def greet(name):&#10;    print(&quot;Hello, &quot; + name + &quot;!&quot;)"></textarea>
+        </div>
+        <p class="hint" id="editor-hint">Tab indents. Press Esc, then Tab, to leave the editor. <kbd>Ctrl</kbd> + <kbd>Enter</kbd> runs.</p>
+      </div>
+
+      <aside class="compose-options" aria-label="How to improve it">
+        <div class="option">
+          <div class="switch-row">
+            <label for="allow-libraries" class="option-title">Allow libraries</label>
+            <button class="switch" id="allow-libraries" type="button" role="switch" aria-checked="false">
+              <span class="switch-knob"></span>
+            </button>
+          </div>
+          <p class="option-help" id="libraries-help">Standard library only. Turn on to let it suggest well-known packages.</p>
+        </div>
+
+        <fieldset class="option">
+          <legend class="option-title">Explain it for</legend>
+          <div class="segmented" id="level">
+            <label><input type="radio" name="level" value="beginner"><span>Beginner</span></label>
+            <label><input type="radio" name="level" value="intermediate" checked><span>Intermediate</span></label>
+            <label><input type="radio" name="level" value="advanced"><span>Advanced</span></label>
+          </div>
+        </fieldset>
+
+        <fieldset class="option">
+          <legend class="option-title">Focus on</legend>
+          <p class="option-help">Leave all off for a balanced pass.</p>
+          <div class="chips" id="focus">
+            <label><input type="checkbox" value="readability"><span>Readability</span></label>
+            <label><input type="checkbox" value="modern syntax and idioms"><span>Modern idioms</span></label>
+            <label><input type="checkbox" value="performance"><span>Performance</span></label>
+            <label><input type="checkbox" value="safety and error handling"><span>Safety</span></label>
+            <label><input type="checkbox" value="structure and design"><span>Structure</span></label>
+          </div>
+        </fieldset>
+
+        <div class="run">
+          <button class="btn-primary" id="run" type="button">Improve my code</button>
+          <button class="btn-quiet" id="load-example" type="button">Try the example</button>
+          <div class="progress" id="progress" hidden>
+            <span class="progress-bar" aria-hidden="true"></span>
+            <span id="progress-text" role="status" aria-live="polite"></span>
+            <button class="btn-link" id="cancel" type="button">Cancel</button>
+          </div>
+          <div class="error" id="error" role="alert" hidden></div>
+        </div>
+      </aside>
+    </section>
+
+    <!-- Step 2: the result -->
+    <section class="result" id="result" hidden aria-labelledby="result-title">
+      <div class="result-head">
+        <div class="result-intro">
+          <h2 id="result-title" tabindex="-1">What changed, and why</h2>
+          <p class="summary" id="summary"></p>
+          <p class="stats" id="stats"></p>
+        </div>
+        <button class="btn-quiet" id="edit-again" type="button">Edit the code</button>
+      </div>
+
+      <div class="callouts" id="callouts"></div>
+
+      <div class="workspace">
+        <nav class="lessons" aria-label="Lessons">
+          <div class="lessons-head">
+            <h3 id="lessons-title">Lessons</h3>
+            <div class="stepper">
+              <button class="btn-icon" id="prev-lesson" type="button" aria-label="Previous lesson">
+                <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10 3 5 8l5 5"/></svg>
+              </button>
+              <button class="btn-icon" id="next-lesson" type="button" aria-label="Next lesson">
+                <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m6 3 5 5-5 5"/></svg>
+              </button>
+            </div>
+          </div>
+          <ol class="lesson-list" id="lesson-list"></ol>
+        </nav>
+
+        <div class="code-area">
+          <div class="code-toolbar">
+            <div class="segmented segmented-small" role="radiogroup" aria-label="Diff view">
+              <label><input type="radio" name="view" value="split" checked><span>Side by side</span></label>
+              <label><input type="radio" name="view" value="unified"><span>Inline</span></label>
+              <label><input type="radio" name="view" value="after"><span>Improved only</span></label>
+            </div>
+            <div class="toolbar-actions">
+              <button class="btn-quiet btn-small" id="copy" type="button">Copy improved code</button>
+              <button class="btn-quiet btn-small" id="download" type="button">Download</button>
+            </div>
+          </div>
+          <div class="code-heads" id="code-heads">
+            <span>Your code</span>
+            <span>Improved</span>
+          </div>
+          <div class="code-scroll" id="code-scroll">
+            <table class="diff" id="diff"></table>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <p>Free and open source under the MIT License. Your code goes only to the model you choose.</p>
+  </footer>
+
+  <!-- Settings -->
+  <dialog id="settings" aria-labelledby="settings-title">
+    <form method="dialog" class="settings-form" id="settings-form">
+      <h2 id="settings-title">Model</h2>
+      <p class="option-help">Pick where your code is sent. Settings are saved in this browser.</p>
+
+      <fieldset class="providers">
+        <legend class="sr-only">Provider</legend>
+        <label class="provider">
+          <input type="radio" name="provider" value="ollama">
+          <span class="provider-name">Ollama</span>
+          <span class="provider-note">Runs on your computer. Free and private.</span>
+        </label>
+        <label class="provider">
+          <input type="radio" name="provider" value="anthropic">
+          <span class="provider-name">Anthropic</span>
+          <span class="provider-note">Claude models. Needs an API key.</span>
+        </label>
+        <label class="provider">
+          <input type="radio" name="provider" value="openai">
+          <span class="provider-name">OpenAI-compatible</span>
+          <span class="provider-note">OpenAI, OpenRouter, LM Studio, llama.cpp and more.</span>
+        </label>
+        <label class="provider">
+          <input type="radio" name="provider" value="demo">
+          <span class="provider-name">Demo</span>
+          <span class="provider-note">A recorded answer for the built-in example. No model needed.</span>
+        </label>
+      </fieldset>
+
+      <div class="provider-fields" id="provider-fields">
+        <label class="field" data-for="ollama anthropic openai">
+          <span>Model</span>
+          <input id="model" type="text" list="model-options" autocomplete="off" spellcheck="false">
+          <datalist id="model-options"></datalist>
+          <small class="field-note" id="model-note"></small>
+        </label>
+        <label class="field" data-for="ollama openai anthropic">
+          <span>Server address</span>
+          <input id="base-url" type="url" autocomplete="off" spellcheck="false">
+        </label>
+        <label class="field" data-for="anthropic openai">
+          <span>API key</span>
+          <input id="api-key" type="password" autocomplete="off" spellcheck="false">
+          <small class="field-note" id="key-note"></small>
+        </label>
+      </div>
+
+      <div class="dialog-actions">
+        <button class="btn-quiet" value="cancel" type="submit">Cancel</button>
+        <button class="btn-primary" value="save" type="submit" id="save-settings">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+</body>
+</html>
