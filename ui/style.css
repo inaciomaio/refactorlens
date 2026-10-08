@@ -633,6 +633,9 @@ fieldset.option legend { margin-bottom: 8px; }
 
 .practise-actions { display: flex; gap: 10px; margin-top: 18px; }
 
+.practise-note { margin: 8px 0; }
+.practise-note-label { font-weight: 700; color: var(--muted); }
+
 /* Code area */
 .code-area {
   background: var(--sheet);

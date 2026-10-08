@@ -63,6 +63,9 @@ const state = {
   hlCache: new Map(),
   hlLang: null,
   abort: null,
+  // Counts practise sessions, so a concept can wait a few before being asked
+  // again. Restored from storage so counting continues across reloads.
+  practiseSessions: store.get("practiseSessions", 0),
 };
 
 // ---------------------------------------------------------------------------
@@ -647,25 +650,87 @@ const practise = {
   results: [],
 };
 
+// A concept's name is free text from the model, so the same idea can arrive as
+// "early return" one run and "guard clause" the next. This maps the known
+// spellings onto one key so the memory counts them as the same idea.
+// Keys and values are both lowercase; the display name is kept separately.
+const CONCEPT_ALIASES = [
+  ["early return", "guard clause", "guard clauses", "early exit", "early exits", "return early"],
+  ["type hints", "type annotations", "type hinting", "annotations"],
+  ["context managers", "context manager", "with statement", "with statements"],
+  ["direct iteration", "iterate directly", "looping over items", "iteration"],
+  ["truthiness", "truthy and falsy", "falsy values"],
+  ["tuple unpacking", "unpacking", "destructuring", "destructuring assignment"],
+  ["defaultdict", "default dict"],
+  ["know the standard library", "standard library", "use the standard library"],
+  ["pathlib", "path objects"],
+  ["dict.items()", "items()", "iterating dictionaries"],
+  ["f-strings", "f strings", "formatted strings", "string formatting"],
+];
+
 /// Stable key for a concept, so "early return" is remembered as one idea.
 function conceptKey(c) {
-  return c.concept ? c.concept.name.trim().toLowerCase() : "";
+  if (!c.concept) return "";
+  const name = c.concept.name.trim().toLowerCase();
+  if (!name) return "";
+  for (const group of CONCEPT_ALIASES) {
+    if (group.includes(name)) return group[0];
+  }
+  return name;
 }
+
+/// A concept is asked again after this many sessions, once it is known. The
+/// multiplier grows with each correct answer, so a solid concept fades out
+/// instead of coming back every time.
+const FIRST_GAP = 1;
+const MAX_GAP = 5;
 
 /// All concepts the learner has answered before, keyed by conceptKey.
 function practiseLog() {
-  return store.get("practise", {});
+  const log = store.get("practise", {});
+  return log && typeof log === "object" ? log : {};
+}
+
+/// How many sessions should pass before this concept is asked again. A concept
+/// answered right several times in a row waits longer each time.
+function conceptGap(rec) {
+  if (!rec) return 0;
+  if (rec.missed > 0 && rec.streak === 0) return FIRST_GAP;
+  return Math.min(MAX_GAP, FIRST_GAP + rec.streak);
+}
+
+/// True when a concept is worth asking in this session: never seen, or enough
+/// sessions have passed since it was last asked.
+function conceptIsDue(rec, sessions) {
+  if (!rec || !rec.seen) return true;
+  const since = sessions - (rec.lastSession ?? 0);
+  return since >= conceptGap(rec);
 }
 
 function recordPractise(c, gotIt) {
   const key = conceptKey(c);
   if (!key) return;
   const log = practiseLog();
-  const rec = log[key] || { seen: 0, missed: 0 };
+  const rec = log[key] || { name: c.concept.name.trim(), seen: 0, missed: 0, streak: 0, lastSession: 0 };
+  rec.name = c.concept.name.trim();
   rec.seen += 1;
-  if (!gotIt) rec.missed += 1;
+  if (gotIt) {
+    rec.streak += 1;
+  } else {
+    rec.missed += 1;
+    rec.streak = 0;
+  }
+  rec.lastSession = state.practiseSessions;
   log[key] = rec;
   store.set("practise", log);
+}
+
+/// Plain words for how well a concept is known, never a grade.
+function conceptStanding(rec) {
+  if (!rec || !rec.seen) return "new";
+  if (rec.missed === 0) return "solid";
+  if (rec.streak > 0) return "getting there";
+  return "still shaky";
 }
 
 /// Snippets are stored as line ranges, so pull the text out of the code.
@@ -712,15 +777,23 @@ function buildQuestions(changes) {
     }
   }
 
-  // Favour concepts that were missed before, then cap the session so it stays
-  // short enough to finish.
+  // Prefer concepts that are due: never seen, or not seen for a while. Each
+  // change the model just offered is a candidate, but a concept you have
+  // already shown you know is held back, so a session leads with what needs
+  // work. Not-due questions only top a session up to a comfortable length.
   const log = practiseLog();
-  const weight = (q) => {
+  const sessions = state.practiseSessions;
+  const CAP = 6;
+  const MIN = 4;
+  const due = [];
+  const rest = [];
+  for (const q of questions) {
     const rec = log[conceptKey(q.change)];
-    return rec ? rec.missed : 0;
-  };
-  questions.sort((a, b) => weight(b) - weight(a));
-  return questions.slice(0, 6);
+    if (!rec || !rec.seen || conceptIsDue(rec, sessions)) due.push(q);
+    else rest.push(q);
+  }
+  const filler = Math.max(0, Math.min(rest.length, CAP - due.length, MIN - due.length));
+  return due.concat(rest.slice(0, filler)).slice(0, CAP);
 }
 
 /// Render a line range as a small code block. Highlighting whole lines here
@@ -740,6 +813,10 @@ function startPractise() {
     toast("Nothing to practise yet. Run a change first.");
     return;
   }
+  // Count the session now, so "sessions since last asked" is measured from
+  // here and the same concept is not asked twice in a row.
+  state.practiseSessions += 1;
+  store.set("practiseSessions", state.practiseSessions);
   $("#practise").hidden = false;
   $("#workspace").hidden = true;
   renderQuestion();
@@ -852,9 +929,32 @@ function endPractise() {
   const total = practise.questions.length;
   const right = practise.results.filter(Boolean).length;
   $("#practise-progress").textContent = "Session finished. Nothing was graded or sent anywhere.";
+
+  // Name the concepts this session covered, and how they stand now. Plain
+  // words, no score and no streak: the point is what to look at next.
+  const log = practiseLog();
+  const rows = [];
+  for (const q of practise.questions) {
+    const key = conceptKey(q.change);
+    if (!key || rows.some((r) => r.key === key)) continue;
+    const rec = log[key];
+    rows.push({ key, name: (rec && rec.name) || q.change.concept.name, standing: conceptStanding(rec) });
+  }
+  const byStanding = (s) => rows.filter((r) => r.standing === s).map((r) => escapeHtml(r.name));
+  const shaky = byStanding("still shaky");
+  const fresh = byStanding("new");
+  const solid = byStanding("solid").concat(byStanding("getting there"));
+
+  const list = (label, names) => names.length
+    ? `<p class="practise-note"><span class="practise-note-label">${label}</span> ${names.join(", ")}</p>` : "";
+
   $("#practise-card").innerHTML = `
     <p class="practise-prompt">That's the lot: ${right} of ${total} you spotted straight away.</p>
-    <p class="option-help">The ones you missed are the ones worth re-reading. Run another change, or the same code again with different settings, for more practice.</p>
+    <p class="option-help">The concepts below are what you have practised so far, in this browser only.</p>
+    ${list("Still shaky:", shaky)}
+    ${list("New this session:", fresh)}
+    ${list("Feeling solid:", solid)}
+    <p class="option-help">Run another change for more practice. The ones marked shaky will come round again first.</p>
     <div class="practise-actions">
       <button class="btn-primary" id="practise-again" type="button">Practise again</button>
       <button class="btn-quiet" id="practise-done" type="button">Back to the code</button>

@@ -19,7 +19,8 @@ side-by-side diff with lessons. `cargo test`, `cargo clippy` and `cargo fmt
 - Environment/flag config (`src/config.rs`).
 - Build-free UI: HTML, CSS, JS, self-hosted fonts and highlight.js (`ui/`).
 - Practise mode: questions built from the changes a run already produced, with
-  no new prompt fields. Progress is kept per concept in `localStorage`.
+  no new prompt fields. Concepts are remembered across sessions in
+  `localStorage`, with a small alias table so similar names count as one idea.
 - Nix flake with a `devShells.default`, a `packages.default` and `apps.default`, verified on NixOS: `nix develop`, `nix build` (including the sandboxed check phase with all tests) and the built binary serving HTTP all work.
 - `flake.lock` committed, pinning nixpkgs and flake-utils.
 - CI workflow running fmt, clippy, tests and `node --check`.
@@ -28,10 +29,8 @@ side-by-side diff with lessons. `cargo test`, `cargo clippy` and `cargo fmt
 
 ## In progress
 
-- The practise mode (Step 1 of the direction below) is complete and working.
-  Step 2, remembering concepts across sessions, is not started: the per-concept
-  record is written today but not yet used to pick questions by anything other
-  than "missed most".
+Nothing is half-finished at the moment. The practise mode, Steps 1 and 2 of the
+direction below, is complete.
 
 ## Next
 
@@ -69,7 +68,7 @@ Lives in `ui/app.js` (the `practise` object and the `buildQuestions`,
   `after_lines` plus up to three other changes' `after_lines` as wrong answers.
 - "What would you change?": used when a change is the only one, since there is
   nothing to compare against.
-- A session is capped at six questions, and concepts missed most are asked
+- A session is capped at six questions, and concepts that are due are asked
   first.
 - Score and per-concept results live in `localStorage`, next to the settings.
   Nothing is sent anywhere.
@@ -77,14 +76,25 @@ Lives in `ui/app.js` (the `practise` object and the `buildQuestions`,
 Useful files to read first: `analysis.rs` (`Change`, `locate`) and `app.js`
 (`buildQuestions`).
 
-### Step 2: concepts that persist (the real feature)
+### Step 2: concepts that persist (done)
 
-- Add a stable id for a concept. `Concept.name` is a free string today, so the
-  model may say "early return" one run and "guard clause" the next. Normalise
-  the name and keep a small alias table so the same idea is the same key.
-- Keep a per-concept record of what has been missed, and re-ask it later. This
-  is what makes it a tutor instead of a quiz.
-- Show progress in plain words ("guard clauses: still shaky"), never as a grade.
+Also in `ui/app.js`, alongside Step 1.
+
+- **Stable id.** `CONCEPT_ALIASES` folds the known spellings of an idea onto one
+  key, so "guard clause" and "early return" share a record. The display name is
+  kept separately, so the wording still reads naturally.
+- **Spacing.** Each concept records how many times it was seen, how many were
+  missed, and the last session it came up in. A concept that is answered right
+  waits longer each time (up to five sessions); one that is missed comes back
+  next session. The session leads with due concepts and only tops up to four
+  questions with ones already known, so a session stays useful rather than
+  repeating what is solid.
+- **Plain words.** The end-of-session screen groups concepts into "still
+  shaky", "new this session" and "feeling solid". No score, no streak, no
+  percentage.
+
+To try it: run the example, practise, then run and practise again. Concepts you
+miss should come round first.
 
 ### Tone
 
