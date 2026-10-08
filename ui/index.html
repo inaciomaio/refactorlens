@@ -117,7 +117,19 @@
 
       <div class="callouts" id="callouts"></div>
 
-      <div class="workspace">
+      <!-- Practise mode: turns the same changes into short questions. -->
+      <section class="practise" id="practise" hidden aria-labelledby="practise-title">
+        <div class="practise-head">
+          <div>
+            <h3 id="practise-title">Practise</h3>
+            <p class="option-help" id="practise-progress">A few questions about the changes above. Nothing is graded or sent anywhere.</p>
+          </div>
+          <button class="btn-quiet btn-small" id="practise-stop" type="button">Back to the code</button>
+        </div>
+        <div class="practise-card" id="practise-card"></div>
+      </section>
+
+      <div class="workspace" id="workspace">
         <nav class="lessons" aria-label="Lessons">
           <div class="lessons-head">
             <h3 id="lessons-title">Lessons</h3>
@@ -141,6 +153,7 @@
               <label><input type="radio" name="view" value="after"><span>Improved only</span></label>
             </div>
             <div class="toolbar-actions">
+              <button class="btn-quiet btn-small" id="practise-start" type="button">Practise this</button>
               <button class="btn-quiet btn-small" id="copy" type="button">Copy improved code</button>
               <button class="btn-quiet btn-small" id="download" type="button">Download</button>
             </div>

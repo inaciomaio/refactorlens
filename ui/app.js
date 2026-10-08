@@ -413,6 +413,9 @@ function showResult(r) {
   renderLessons(r);
   renderDiff();
 
+  // A new run replaces the changes, so any practise session is stale.
+  stopPractise();
+
   $("#compose").hidden = true;
   $("#result").hidden = false;
   window.scrollTo({ top: 0 });
@@ -621,6 +624,246 @@ function downloadImproved() {
 }
 
 // ---------------------------------------------------------------------------
+// Practise mode.
+//
+// Every question is built from data a normal run already produced: each change
+// has a before/after snippet, a title, an explanation and a concept. Nothing
+// extra is asked of the model, so there is no new way for a reply to fail.
+//
+// Two shapes, chosen by what a reply happens to support:
+//  - "Which version is the improvement?" needs at least two changes, because
+//    the wrong options are other changes' after-snippets.
+//  - "What would you change?" needs only one change: show before and after,
+//    let the learner think, then reveal the explanation.
+//
+// Progress lives in localStorage next to the settings. It records per-concept
+// results so a later session can favour the concepts that are still shaky.
+// ---------------------------------------------------------------------------
+
+const practise = {
+  questions: [],
+  at: 0,
+  answered: false,
+  results: [],
+};
+
+/// Stable key for a concept, so "early return" is remembered as one idea.
+function conceptKey(c) {
+  return c.concept ? c.concept.name.trim().toLowerCase() : "";
+}
+
+/// All concepts the learner has answered before, keyed by conceptKey.
+function practiseLog() {
+  return store.get("practise", {});
+}
+
+function recordPractise(c, gotIt) {
+  const key = conceptKey(c);
+  if (!key) return;
+  const log = practiseLog();
+  const rec = log[key] || { seen: 0, missed: 0 };
+  rec.seen += 1;
+  if (!gotIt) rec.missed += 1;
+  log[key] = rec;
+  store.set("practise", log);
+}
+
+/// Snippets are stored as line ranges, so pull the text out of the code.
+/// `which` picks the original or the improved version.
+function snippetLines(range, which) {
+  const code = which === "after" ? state.result.improved_code : state.result.original_code;
+  const lines = code.split("\n");
+  return lines.slice(range[0] - 1, range[1]);
+}
+
+function shuffle(items) {
+  const out = items.slice();
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [out[i], out[j]] = [out[j], out[i]];
+  }
+  return out;
+}
+
+/// Build the question list from the changes we already have.
+function buildQuestions(changes) {
+  // Only changes with both snippets can be shown as a before/after pair.
+  const pairs = changes.filter((c) => c.before_lines && c.after_lines);
+  const questions = [];
+
+  // One question per change. Prefer "pick the improvement" when there are
+  // other changes to use as wrong answers, otherwise fall back to "think".
+  for (const c of changes) {
+    if (!c.before_lines || !c.after_lines) continue;
+    const others = shuffle(pairs.filter((o) => o.id !== c.id)).slice(0, 3);
+    if (others.length >= 1) {
+      questions.push({
+        kind: "choose",
+        change: c,
+        options: shuffle([
+          { lines: c.after_lines, right: true },
+          ...others.map((o) => ({ lines: o.after_lines, right: false })),
+        ]),
+      });
+    } else {
+      // A lone change has nothing to compare against: ask an open question
+      // and let the learner think before revealing the lesson.
+      questions.push({ kind: "think", change: c });
+    }
+  }
+
+  // Favour concepts that were missed before, then cap the session so it stays
+  // short enough to finish.
+  const log = practiseLog();
+  const weight = (q) => {
+    const rec = log[conceptKey(q.change)];
+    return rec ? rec.missed : 0;
+  };
+  questions.sort((a, b) => weight(b) - weight(a));
+  return questions.slice(0, 6);
+}
+
+/// Render a line range as a small code block. Highlighting whole lines here
+/// would fight the layout, and the diff above already shows colour.
+function snippetBlock(range, which) {
+  return snippetLines(range, which).map((l) => escapeHtml(l)).join("\n");
+}
+
+function startPractise() {
+  const r = state.result;
+  if (!r) return;
+  practise.questions = buildQuestions(r.changes);
+  practise.at = 0;
+  practise.answered = false;
+  practise.results = [];
+  if (!practise.questions.length) {
+    toast("Nothing to practise yet. Run a change first.");
+    return;
+  }
+  $("#practise").hidden = false;
+  $("#workspace").hidden = true;
+  renderQuestion();
+  $("#practise-title").focus({ preventScroll: true });
+  window.scrollTo({ top: 0 });
+}
+
+function stopPractise() {
+  $("#practise").hidden = true;
+  $("#workspace").hidden = false;
+}
+
+function practiseProgressText() {
+  const total = practise.questions.length;
+  const n = practise.at + 1;
+  const right = practise.results.filter(Boolean).length;
+  return `Question ${n} of ${total}${right ? `, ${right} right so far` : ""}. Not graded, not sent anywhere.`;
+}
+
+function renderQuestion() {
+  const card = $("#practise-card");
+  const q = practise.questions[practise.at];
+  if (!q) return endPractise();
+  practise.answered = false;
+  $("#practise-progress").textContent = practiseProgressText();
+
+  const c = q.change;
+
+  if (q.kind === "choose") {
+    card.innerHTML = `
+      <p class="practise-prompt">Which of these is the improved version of the highlighted lines?</p>
+      <pre class="practise-code">${snippetBlock(c.before_lines, "before")}</pre>
+      <div class="practise-options" id="practise-options">
+        ${q.options.map((o, i) => `
+          <button class="practise-option" type="button" data-i="${i}" data-right="${o.right}">
+            <span class="practise-key">${String.fromCharCode(65 + i)}</span>
+            <pre class="practise-code">${snippetBlock(o.lines, "after")}</pre>
+          </button>`).join("")}
+      </div>
+      <div class="practise-answer" id="practise-answer" hidden></div>`;
+    $$("#practise-options .practise-option").forEach((b) =>
+      b.addEventListener("click", () => answerChoice(b, q)));
+  } else {
+    // Both snippets are shown; the learner decides what is wrong, then peeks.
+    card.innerHTML = `
+      <p class="practise-prompt">What would you change here, and why?</p>
+      <div class="practise-pair">
+        <div><p class="practise-label">Before</p><pre class="practise-code">${snippetBlock(c.before_lines, "before")}</pre></div>
+        <div><p class="practise-label">After</p><pre class="practise-code">${snippetBlock(c.after_lines, "after")}</pre></div>
+      </div>
+      <div class="practise-actions" id="practise-actions">
+        <button class="btn-primary" id="practise-reveal" type="button">Show the lesson</button>
+      </div>
+      <div class="practise-answer" id="practise-answer" hidden></div>`;
+    $("#practise-reveal").addEventListener("click", () => {
+      $("#practise-actions").hidden = true;
+      revealAnswer(q, null);
+    });
+  }
+}
+
+function answerChoice(btn, q) {
+  if (practise.answered) return;
+  practise.answered = true;
+  const right = btn.dataset.right === "true";
+  $$("#practise-options .practise-option").forEach((b) => {
+    b.disabled = true;
+    if (b.dataset.right === "true") b.classList.add("correct");
+    else if (b === btn) b.classList.add("wrong");
+  });
+  revealAnswer(q, right, "practise-options");
+}
+
+function revealAnswer(q, gotIt, hideId) {
+  if (hideId) $(`#${hideId}`).hidden = true;
+  const c = q.change;
+  practise.results.push(gotIt === true);
+  // Unanswered reveals are not counted as misses; they are not tests.
+  if (gotIt !== null) recordPractise(c, gotIt);
+
+  const cat = c.category in CATEGORY_LABELS ? c.category : "readability";
+  const concept = c.concept
+    ? `<div class="concept"><p class="concept-name">${escapeHtml(c.concept.name)}</p><p>${richText(c.concept.explanation)}</p></div>` : "";
+  const verdict = gotIt === true ? `<p class="practise-verdict right">Yes, that's it.</p>`
+    : gotIt === false ? `<p class="practise-verdict wrong">Not quite. Here is the change.</p>` : "";
+
+  const box = $("#practise-answer");
+  box.hidden = false;
+  box.innerHTML = `
+    ${verdict}
+    <div class="practise-lesson" style="--cat: var(--c-${cat})">
+      <p class="practise-lesson-title"><span class="practise-dot"></span>${escapeHtml(c.title || "Change")}</p>
+      ${c.what ? `<p class="lesson-what">${richText(c.what)}</p>` : ""}
+      ${c.why ? `<p class="lesson-why">${richText(c.why)}</p>` : ""}
+      ${concept}
+    </div>
+    <div class="practise-actions">
+      <button class="btn-primary" id="practise-next" type="button">
+        ${practise.at + 1 < practise.questions.length ? "Next question" : "Finish"}
+      </button>
+    </div>`;
+  $("#practise-next").addEventListener("click", () => {
+    practise.at += 1;
+    renderQuestion();
+  });
+  $("#practise-next").focus({ preventScroll: true });
+}
+
+function endPractise() {
+  const total = practise.questions.length;
+  const right = practise.results.filter(Boolean).length;
+  $("#practise-progress").textContent = "Session finished. Nothing was graded or sent anywhere.";
+  $("#practise-card").innerHTML = `
+    <p class="practise-prompt">That's the lot: ${right} of ${total} you spotted straight away.</p>
+    <p class="option-help">The ones you missed are the ones worth re-reading. Run another change, or the same code again with different settings, for more practice.</p>
+    <div class="practise-actions">
+      <button class="btn-primary" id="practise-again" type="button">Practise again</button>
+      <button class="btn-quiet" id="practise-done" type="button">Back to the code</button>
+    </div>`;
+  $("#practise-again").addEventListener("click", startPractise);
+  $("#practise-done").addEventListener("click", stopPractise);
+}
+
+// ---------------------------------------------------------------------------
 // Start up
 // ---------------------------------------------------------------------------
 async function init() {
@@ -663,6 +906,8 @@ async function init() {
   }));
   $("#copy").addEventListener("click", copyImproved);
   $("#download").addEventListener("click", downloadImproved);
+  $("#practise-start").addEventListener("click", startPractise);
+  $("#practise-stop").addEventListener("click", stopPractise);
 
   // j / k step through lessons, like many code review tools.
   document.addEventListener("keydown", (e) => {

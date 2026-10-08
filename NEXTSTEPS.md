@@ -18,6 +18,8 @@ side-by-side diff with lessons. `cargo test`, `cargo clippy` and `cargo fmt
 - Built-in demo example and its recorded answer (`src/demo.rs`).
 - Environment/flag config (`src/config.rs`).
 - Build-free UI: HTML, CSS, JS, self-hosted fonts and highlight.js (`ui/`).
+- Practise mode: questions built from the changes a run already produced, with
+  no new prompt fields. Progress is kept per concept in `localStorage`.
 - Nix flake with a `devShells.default`, a `packages.default` and `apps.default`, verified on NixOS: `nix develop`, `nix build` (including the sandboxed check phase with all tests) and the built binary serving HTTP all work.
 - `flake.lock` committed, pinning nixpkgs and flake-utils.
 - CI workflow running fmt, clippy, tests and `node --check`.
@@ -26,7 +28,10 @@ side-by-side diff with lessons. `cargo test`, `cargo clippy` and `cargo fmt
 
 ## In progress
 
-Nothing is half-finished at the moment.
+- The practise mode (Step 1 of the direction below) is complete and working.
+  Step 2, remembering concepts across sessions, is not started: the per-concept
+  record is written today but not yet used to pick questions by anything other
+  than "missed most".
 
 ## Next
 
@@ -52,20 +57,25 @@ lines (`analysis::locate`), so every change has verified line ranges, a
 `category`, a `title` and a `Concept`. A quiz is that same data shown in a
 different order.
 
-### Step 1: practise, with no new model fields (small, do first)
+### Step 1: practise, with no new model fields (done)
 
-Build questions entirely from what a reply already contains:
+Lives in `ui/app.js` (the `practise` object and the `buildQuestions`,
+`renderQuestion`, `revealAnswer` functions) and `ui/style.css` under
+"Practise mode". Reachable from **Practise this** in the result toolbar.
 
-- Hide `improved_code`. Show one change's `before_lines` and ask what is wrong
-  with them. Reveal `what` and `why` as the answer.
-- Show `before_snippet` and ask which `after_snippet` is right. Distractors come
-  from *other* changes in the same reply, so no extra prompt is needed.
-- Score lives in `localStorage`, next to the existing settings. Nothing is sent
-  anywhere, and the "nothing to install, keys stay local" promise holds.
+- Questions come entirely from what a reply already contains. The model is not
+  asked for anything new, so there is no new way for a reply to fail.
+- "Pick the improvement": show one change's `before_lines`, offer its
+  `after_lines` plus up to three other changes' `after_lines` as wrong answers.
+- "What would you change?": used when a change is the only one, since there is
+  nothing to compare against.
+- A session is capped at six questions, and concepts missed most are asked
+  first.
+- Score and per-concept results live in `localStorage`, next to the settings.
+  Nothing is sent anywhere.
 
-This reuses `Change`, `Concept` and `Diff` as they are. It can ship without
-touching the prompt, which is the best part: no new failure modes, no worse
-`truncated` odds.
+Useful files to read first: `analysis.rs` (`Change`, `locate`) and `app.js`
+(`buildQuestions`).
 
 ### Step 2: concepts that persist (the real feature)
 

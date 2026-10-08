@@ -1,0 +1,7 @@
+# Keep every text file LF in the repository, whatever the developer's OS.
+* text=auto eol=lf
+
+# Binary assets must never be touched.
+*.png binary
+*.woff2 binary
+*.svg text
