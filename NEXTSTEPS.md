@@ -26,7 +26,8 @@ side-by-side diff with lessons. `cargo test`, `cargo clippy` and `cargo fmt
 - CI workflow running fmt, clippy, tests and `node --check`.
 - Streaming: the summary is sent as it is written, over SSE, so a long run
   shows progress instead of a silent timer. The final result arrives as the last
-  event; a client that cannot stream falls back to the plain endpoint.
+  event; a client that cannot stream falls back to the plain endpoint. Seen
+  working in the browser.
 - Project bootstrap docs: `flake.nix`, `shell.nix`, `.envrc`, `README.md`,
   `AGENTS.md`, `CLAUDE.md`, `NEXTSTEPS.md`, `.gitignore`.
 
@@ -136,6 +137,11 @@ Pieces:
   preview frame is preferred over blocking the model request.
 - `ui/app.js` — `apiStream` and `parseSse` read the events by hand, so the page
   still needs no library. `setStreamText` shows the summary as it grows.
+
+Confirmed by hand in a browser. What is still unverified automatically is the
+browser side: there is no headless browser in the dev shell, so the tests cover
+the wire format (`analysis::partial_summary`, the SSE framing) but not the
+rendering of the growing text.
 
 ## Ideas / later
 
