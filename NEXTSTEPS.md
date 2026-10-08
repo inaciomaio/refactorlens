@@ -28,6 +28,9 @@ side-by-side diff with lessons. `cargo test`, `cargo clippy` and `cargo fmt
   shows progress instead of a silent timer. The final result arrives as the last
   event; a client that cannot stream falls back to the plain endpoint. Seen
   working in the browser.
+- Follow-up questions: ask about the whole refactor, or tag a lesson and ask
+  about that one. Answers stream as prose. The conversation is held in the
+  browser and sent with each question, so the server still keeps no session.
 - Project bootstrap docs: `flake.nix`, `shell.nix`, `.envrc`, `README.md`,
   `AGENTS.md`, `CLAUDE.md`, `NEXTSTEPS.md`, `.gitignore`.
 
@@ -39,11 +42,13 @@ direction below, is complete.
 ## Next
 
 - Add word-level highlighting inside changed diff lines (see `CONTRIBUTING.md`).
-- Add follow-up questions about a lesson.
 - Stream more than the summary. Right now only `summary` is streamed, because
   it comes first in the reply and reads well on its own. Streaming the improved
   code would need an incremental JSON parser and a diff that can redraw itself
   (option C in the notes below). Only worth it if the summary alone feels thin.
+- Keep a follow-up conversation across a new run, so a question can refer to the
+  previous code. Today a new run clears the thread, because the old answer is
+  about different code.
 - Add more languages to the picker in `ui/index.html` and `FILE_EXT` in `ui/app.js`.
 
 ## Direction: from refactorer to tutor
@@ -142,6 +147,29 @@ Confirmed by hand in a browser. What is still unverified automatically is the
 browser side: there is no headless browser in the dev shell, so the tests cover
 the wire format (`analysis::partial_summary`, the SSE framing) but not the
 rendering of the growing text.
+
+## Follow-up questions
+
+`POST /api/follow-up` streams an answer as plain prose. Unlike a refactor run,
+this returns no JSON, so the whole reply streams rather than just a preview.
+
+- The page sends the refactor (language, both code versions, the summary, the
+  change titles), the question, and the conversation so far, every time. The
+  server keeps no session, matching the rest of the app. `MAX_HISTORY_TURNS`
+  caps how many earlier turns are replayed so a long thread cannot outgrow the
+  model's context.
+- Tagging a lesson adds its title, category, `what`, `why` and concept to the
+  question, and tells the model to answer about that change. No tag means the
+  question is about the refactor as a whole, and the prompt says so.
+- The system prompt is prose, not JSON, and asks the model to admit when it is
+  unsure. A follow-up is where a wrong answer is easiest to give confidently,
+  so the prompt says so explicitly.
+- `ui/app.js` holds the thread (`state.askHistory`) and clears it when a new run
+  starts, because the old answers are about different code.
+
+One trap worth remembering: an SSE event with no `data:` line is dropped by
+clients. The `done` event carries `"ok"` rather than an empty body so the page
+can tell a finished answer from one that stopped early.
 
 ## Ideas / later
 

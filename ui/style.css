@@ -647,6 +647,96 @@ fieldset.option legend { margin-bottom: 8px; }
 .practise-note { margin: 8px 0; }
 .practise-note-label { font-weight: 700; color: var(--muted); }
 
+/* ---------- Follow-up questions ---------- */
+.ask {
+  margin-top: 24px;
+  padding: 20px;
+  background: var(--sheet);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-m);
+}
+.ask-head h3 { font-size: var(--t-md); }
+.ask-head .option-help { margin: 4px 0 0; }
+
+.ask-log {
+  list-style: none;
+  margin: 16px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.ask-log:empty { margin: 0; }
+
+.ask-turn {
+  border-left: 3px solid var(--rule);
+  padding-left: 14px;
+}
+.ask-turn.pending { border-left-color: var(--mark); }
+.ask-q p { margin: 0; font-weight: 700; }
+.ask-turn-tag {
+  margin: 0 0 4px;
+  font-size: var(--t-sm);
+  font-weight: 400;
+  color: var(--muted);
+}
+.ask-a { margin-top: 6px; }
+.ask-a p { margin: 0 0 8px; }
+.ask-a p:last-child { margin-bottom: 0; }
+.ask-a code {
+  font-family: var(--font-code);
+  font-size: 0.86em;
+  background: var(--sheet-alt);
+  padding: 1px 4px;
+  border-radius: 4px;
+  border: 1px solid var(--rule);
+}
+.ask-waiting { color: var(--muted); font-style: italic; }
+.ask-code {
+  font-family: var(--font-code);
+  font-size: 13px;
+  line-height: 1.6;
+  font-variant-ligatures: none;
+  background: var(--sheet-alt);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-s);
+  padding: 10px 12px;
+  margin: 0 0 8px;
+  overflow-x: auto;
+  white-space: pre;
+}
+
+.ask-form { margin-top: 16px; }
+.ask-tag {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin-bottom: 8px;
+  padding: 6px 10px;
+  border-radius: var(--radius-s);
+  background: var(--warn-bg);
+  border: 1px solid var(--warn-rule);
+  font-size: var(--t-sm);
+}
+.ask-input { display: flex; gap: 10px; align-items: flex-start; }
+.ask-input textarea {
+  flex: 1;
+  min-width: 0;
+  resize: vertical;
+  padding: 10px 12px;
+  font-family: inherit;
+  font-size: var(--t-base);
+  background: var(--sheet-alt);
+  color: var(--ink);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-s);
+}
+.ask-input textarea:focus-visible { outline: 2px solid var(--focus); outline-offset: 0; }
+.ask-input .btn-primary { flex: 0 0 auto; }
+.ask-hint { margin: 8px 0 0; font-size: var(--t-sm); color: var(--muted); }
+.lesson-ask { margin-top: 10px; }
+
 /* Code area */
 .code-area {
   background: var(--sheet);

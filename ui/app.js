@@ -66,6 +66,12 @@ const state = {
   // Counts practise sessions, so a concept can wait a few before being asked
   // again. Restored from storage so counting continues across reloads.
   practiseSessions: store.get("practiseSessions", 0),
+  // Follow-up questions: the conversation, which lesson is tagged, and whether
+  // an answer is currently arriving.
+  askHistory: [],
+  askTag: null,
+  askBusy: false,
+  askPending: null,
 };
 
 // ---------------------------------------------------------------------------
@@ -78,6 +84,26 @@ function escapeHtml(s) {
 // Turn `backticks` into <code>, after escaping everything else.
 function richText(s) {
   return escapeHtml(s || "").replace(/`([^`]+)`/g, "<code>$1</code>");
+}
+
+// A model's prose answer: keep paragraphs and fenced blocks readable.
+// The reply is not markdown, but it does arrive with newlines and, often,
+// ```-fenced snippets, so those two are handled and everything else is escaped.
+function answerText(s) {
+  const parts = String(s || "").split(/```/);
+  return parts.map((part, i) => {
+    if (i % 2 === 1) {
+      // Inside a fence: strip a leading language word and render as a block.
+      const body = part.replace(/^[a-zA-Z0-9+#-]*\n/, "").replace(/\n$/, "");
+      return `<pre class="ask-code">${escapeHtml(body)}</pre>`;
+    }
+    // Outside a fence: blank lines become paragraphs, single breaks stay breaks.
+    return part.split(/\n{2,}/).map((para) => {
+      const trimmed = para.replace(/^\n+|\n+$/g, "");
+      if (!trimmed) return "";
+      return `<p>${richText(trimmed).replace(/\n/g, "<br>")}</p>`;
+    }).join("");
+  }).join("");
 }
 
 function toast(message) {
@@ -510,6 +536,13 @@ function showResult(r) {
   // A new run replaces the changes, so any practise session is stale.
   stopPractise();
 
+  // The old conversation was about different code, so it no longer applies.
+  state.askHistory = [];
+  state.askTag = null;
+  state.askPending = null;
+  renderAskTag();
+  renderAskLog();
+
   $("#compose").hidden = true;
   $("#result").hidden = false;
   window.scrollTo({ top: 0 });
@@ -566,12 +599,14 @@ function renderLessons(r) {
         ${c.what ? `<p class="lesson-what">${richText(c.what)}</p>` : ""}
         ${c.why ? `<p class="lesson-why">${richText(c.why)}</p>` : ""}
         ${concept}${noLoc}
+        <button class="btn-quiet btn-small lesson-ask" type="button" data-ask="${c.id}">Ask about this</button>
       </div>`;
     li.querySelector(".lesson-btn").addEventListener("click", () => {
       // On narrow screens only the active lesson is visible, so never close it.
       if (narrow()) return;
       select(state.active === c.id ? null : c.id);
     });
+    li.querySelector(".lesson-ask").addEventListener("click", () => tagLesson(c.id));
     list.appendChild(li);
   }
 }
@@ -1055,6 +1090,157 @@ function endPractise() {
 }
 
 // ---------------------------------------------------------------------------
+// Follow-up questions.
+//
+// The conversation lives here in the browser and is sent with every question,
+// because the server keeps no session. Replaying the whole history keeps the
+// thread coherent at the cost of some tokens; the server caps how many turns
+// it replays.
+// ---------------------------------------------------------------------------
+
+/// A tagged lesson id, or null for a question about the whole refactor.
+function askTag() {
+  return state.askTag === undefined ? null : state.askTag;
+}
+
+function tagLesson(id) {
+  state.askTag = id;
+  renderAskTag();
+  $("#ask").scrollIntoView({ block: "nearest", behavior: reduceMotion() ? "auto" : "smooth" });
+  $("#ask-question").focus({ preventScroll: true });
+}
+
+function renderAskTag() {
+  const box = $("#ask-tag");
+  const id = askTag();
+  const c = id !== null && state.result
+    ? state.result.changes.find((x) => x.id === id) : null;
+  if (!c) {
+    box.hidden = true;
+    return;
+  }
+  box.hidden = false;
+  $("#ask-tag-name").textContent = `${c.id}. ${c.title || "Change"}`;
+}
+
+function renderAskLog() {
+  const log = $("#ask-log");
+  log.innerHTML = "";
+  for (const turn of state.askHistory) {
+    log.appendChild(askTurnEl(turn.question, turn.answer, turn.lessonTitle, false));
+  }
+  if (state.askPending) {
+    log.appendChild(askTurnEl(state.askPending.question, state.askPending.answer, state.askPending.lessonTitle, true));
+  }
+}
+
+/// One question and its answer. `richText` on the answer keeps code spans, so a
+/// short snippet in the reply reads as code.
+function askTurnEl(question, answer, lessonTitle, pending) {
+  const li = document.createElement("li");
+  li.className = "ask-turn" + (pending ? " pending" : "");
+  const tag = lessonTitle
+    ? `<p class="ask-turn-tag">About: ${escapeHtml(lessonTitle)}</p>` : "";
+  li.innerHTML = `
+    <div class="ask-q">${tag}<p>${richText(question)}</p></div>
+    <div class="ask-a">${answer ? answerText(answer) : `<p class="ask-waiting">Thinking…</p>`}</div>`;
+  return li;
+}
+
+async function askFollowUp(event) {
+  event.preventDefault();
+  if (!state.result || state.askBusy) return;
+  const question = $("#ask-question").value.trim();
+  if (!question) {
+    $("#ask-question").focus();
+    return;
+  }
+
+  const id = askTag();
+  const lesson = id !== null
+    ? state.result.changes.find((c) => c.id === id) || null : null;
+  const lessonTitle = lesson ? `${lesson.id}. ${lesson.title || "Change"}` : "";
+
+  // Show the question immediately, with a placeholder answer that fills in.
+  const pending = { question, answer: "", lessonTitle };
+  state.askPending = pending;
+  state.askBusy = true;
+  $("#ask-question").value = "";
+  $("#ask-send").disabled = true;
+  renderAskLog();
+  $("#ask-log").lastElementChild.scrollIntoView({ block: "nearest" });
+
+  const body = {
+    question,
+    ...readOptions(),
+    provider: {
+      kind: state.provider.kind,
+      model: providerModel(state.provider.kind),
+      base_url: providerBaseUrl(state.provider.kind),
+      api_key: state.keys[state.provider.kind] || "",
+    },
+    language: state.result.language,
+    original_code: state.result.original_code,
+    improved_code: state.result.improved_code,
+    summary: state.result.summary,
+    change_titles: state.result.changes.map((c) => c.title || "Change"),
+    lesson: lesson ? {
+      number: lesson.id,
+      title: lesson.title,
+      category: lesson.category,
+      what: lesson.what,
+      why: lesson.why,
+      concept: lesson.concept,
+    } : null,
+    history: state.askHistory.map((t) => ({ question: t.question, answer: t.answer })),
+  };
+
+  state.abort = new AbortController();
+  let failed = null;
+  let receivedDone = false;
+  try {
+    await apiStream("/follow-up", body, {
+      signal: state.abort.signal,
+      onEvent: (ev) => {
+        if (ev.event === "delta") {
+          pending.answer += ev.data;
+          const box = $("#ask-log").lastElementChild;
+          if (box) box.querySelector(".ask-a").innerHTML = answerText(pending.answer);
+        } else if (ev.event === "done") {
+          receivedDone = true;
+        } else if (ev.event === "error") {
+          failed = new Error(ev.data);
+        }
+      },
+    });
+  } catch (err) {
+    failed = err;
+  }
+
+  state.askBusy = false;
+  state.askPending = null;
+  state.abort = null;
+  // A stream that ends with text but no done event still produced an answer;
+  // only treat it as a failure when nothing arrived at all.
+  if (!failed && !receivedDone && !pending.answer) {
+    failed = new Error("The answer stopped before any text arrived. Try again.");
+  }
+  if (failed && !pending.answer) {
+    if (failed.name === "AbortError") toast("Cancelled.");
+    else toast(failed.message);
+    renderAskLog();
+  } else {
+    // Keep the turn, even if the stream ended with an error after some text:
+    // the partial answer is still worth reading.
+    state.askHistory.push({ question, answer: pending.answer, lessonTitle });
+    renderAskLog();
+    if (failed) toast(failed.message);
+  }
+  $("#ask-send").disabled = false;
+  $("#ask-question").focus();
+}
+
+// ---------------------------------------------------------------------------
 // Start up
 // ---------------------------------------------------------------------------
 async function init() {
@@ -1099,6 +1285,15 @@ async function init() {
   $("#download").addEventListener("click", downloadImproved);
   $("#practise-start").addEventListener("click", startPractise);
   $("#practise-stop").addEventListener("click", stopPractise);
+  $("#ask-form").addEventListener("submit", askFollowUp);
+  $("#ask-untag").addEventListener("click", () => { state.askTag = null; renderAskTag(); });
+  // Enter sends the question; Shift+Enter starts a new line.
+  $("#ask-question").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      $("#ask-form").requestSubmit();
+    }
+  });
 
   // j / k step through lessons, like many code review tools.
   document.addEventListener("keydown", (e) => {

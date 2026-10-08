@@ -152,6 +152,121 @@ pub fn repair_prompt(error: &str) -> String {
     )
 }
 
+/// A lesson the student asked about, if they tagged one. Kept as plain text so
+/// the prompt does not depend on the JSON shape in `analysis`.
+pub struct LessonContext {
+    pub number: usize,
+    pub title: String,
+    pub category: String,
+    pub what: String,
+    pub why: String,
+    /// The concept the tool attached, if any.
+    pub concept: Option<(String, String)>,
+}
+
+/// The system prompt for a follow-up question.
+///
+/// Different from the main prompt in two ways: the answer is prose, not JSON,
+/// and the tool is now a teacher answering a student, so it is told to be
+/// honest about what it does not know rather than inventing certainty.
+pub fn follow_up_system_prompt(opts: &Options, tagged: bool) -> String {
+    let level = match opts.level {
+        Level::Beginner => {
+            "The student is a BEGINNER. Use plain words, define any term you use, and \
+             keep the answer short. Prefer a small example over a long explanation."
+        }
+        Level::Intermediate => {
+            "The student is INTERMEDIATE. Explain the reasoning and the trade-offs, and \
+             name the relevant concepts precisely."
+        }
+        Level::Advanced => {
+            "The student is ADVANCED. Be concise and precise. Mention complexity, memory \
+             and edge cases where they matter."
+        }
+    };
+
+    let library_rule = if opts.allow_libraries {
+        "You may mention well-known third-party libraries when they are the right answer."
+    } else {
+        "The refactor used the standard library only. Prefer answers that stay inside it, \
+         but you may mention a library if it is genuinely the best choice, and say so."
+    };
+
+    let scope = if tagged {
+        "The student has tagged one specific change from the refactor. Answer about that \
+         change, but use the whole file for context when it helps."
+    } else {
+        "The student is asking about the refactor as a whole."
+    };
+
+    format!(
+        r#"You are RefactorLens, a patient programming teacher, answering a student's \
+follow-up question about a refactor you just explained.
+
+Rules:
+- Answer the question that was asked, in prose. No JSON, no headings unless they help.
+- Be honest. If the code has a problem you did not mention, say so. If you are unsure, \
+  say what you are unsure about rather than inventing confidence.
+- If the student's idea is a good one, say so, even when it differs from the refactor.
+- If the answer needs code, show a short snippet and keep it to the point.
+- Do not restate the whole refactor. Answer the question.
+- {scope}
+- {library_rule}
+- {level}
+- Keep the answer to a few short paragraphs. The student can ask again."#
+    )
+}
+
+/// The first user message for a follow-up: the refactor, so the model has the
+/// context, with the run's summary and every change title as a map.
+///
+/// The code is sent once per follow-up because the server keeps no session. The
+/// history the browser sends is deliberately short for the same reason.
+#[allow(clippy::too_many_arguments)]
+pub fn follow_up_context(
+    language: &str,
+    original: &str,
+    improved: &str,
+    summary: &str,
+    change_titles: &[String],
+) -> String {
+    let titles = change_titles
+        .iter()
+        .enumerate()
+        .map(|(i, t)| format!("  {}. {t}", i + 1))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "Here is the refactor we are discussing.\n\nLanguage: {language}\n\n\
+         What the refactor did: {summary}\n\n\
+         Changes, in order:\n{titles}\n\n\
+         The original code:\n<original>\n{original}\n</original>\n\n\
+         The improved code:\n<improved>\n{improved}\n</improved>"
+    )
+}
+
+/// The question itself, with the tagged lesson when there is one.
+pub fn follow_up_question(question: &str, lesson: Option<&LessonContext>) -> String {
+    match lesson {
+        Some(l) => {
+            let concept = match &l.concept {
+                Some((name, explanation)) => {
+                    format!("\nConcept: {name} — {explanation}")
+                }
+                None => String::new(),
+            };
+            format!(
+                "The student tagged change {} ({}), in the category \"{}\".\n\
+                 What it did: {}\n\
+                 Why it is better: {}{}\n\n\
+                 Their question: {question}",
+                l.number, l.title, l.category, l.what, l.why, concept
+            )
+        }
+        None => format!("The student's question: {question}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -205,5 +320,73 @@ mod tests {
         assert!(p.contains("Python 3.12"));
         assert!(p.contains("performance"));
         assert!(user_prompt("x=1", &opts(false)).starts_with("The code is written in python."));
+    }
+
+    fn lesson() -> LessonContext {
+        LessonContext {
+            number: 3,
+            title: "Loop over items".into(),
+            category: "readability".into(),
+            what: "The loop walks the lines directly.".into(),
+            why: "No index variable is needed.".into(),
+            concept: Some(("Direct iteration".into(), "`for x in thing`".into())),
+        }
+    }
+
+    #[test]
+    fn follow_up_prompt_is_prose_not_json() {
+        let p = follow_up_system_prompt(&opts(false), false);
+        assert!(p.contains("No JSON"));
+        assert!(!p.contains("\"improved_code\""));
+    }
+
+    #[test]
+    fn follow_up_prompt_changes_with_the_level() {
+        let mut o = opts(false);
+        o.level = Level::Advanced;
+        assert!(follow_up_system_prompt(&o, false).contains("ADVANCED"));
+        o.level = Level::Beginner;
+        assert!(follow_up_system_prompt(&o, false).contains("BEGINNER"));
+    }
+
+    #[test]
+    fn tagged_and_general_questions_read_differently() {
+        let tagged = follow_up_system_prompt(&opts(false), true);
+        let general = follow_up_system_prompt(&opts(false), false);
+        assert!(tagged.contains("tagged one specific change"));
+        assert!(general.contains("as a whole"));
+    }
+
+    #[test]
+    fn follow_up_context_includes_both_versions_and_the_titles() {
+        let ctx = follow_up_context(
+            "python",
+            "old code",
+            "new code",
+            "the summary",
+            &["First".into(), "Second".into()],
+        );
+        assert!(ctx.contains("old code"));
+        assert!(ctx.contains("new code"));
+        assert!(ctx.contains("the summary"));
+        assert!(ctx.contains("1. First"));
+        assert!(ctx.contains("2. Second"));
+    }
+
+    #[test]
+    fn follow_up_question_carries_the_lesson_when_tagged() {
+        let q = follow_up_question("Why is that faster?", Some(&lesson()));
+        assert!(q.contains("change 3"));
+        assert!(q.contains("Loop over items"));
+        assert!(q.contains("readability"));
+        assert!(q.contains("Direct iteration"));
+        assert!(q.contains("Why is that faster?"));
+    }
+
+    #[test]
+    fn follow_up_question_without_a_lesson_is_just_the_question() {
+        let q = follow_up_question("Is this thread safe?", None);
+        assert!(q.contains("Is this thread safe?"));
+        assert!(!q.contains("tagged change"));
     }
 }

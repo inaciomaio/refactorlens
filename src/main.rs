@@ -67,6 +67,7 @@ async fn main() {
         .route("/ollama/models", get(get_ollama_models))
         .route("/improve", post(improve))
         .route("/improve/stream", post(improve_stream))
+        .route("/follow-up", post(follow_up))
         .layer(middleware::from_fn(guard_api));
 
     let app = Router::new()
@@ -506,5 +507,181 @@ async fn finish(
     let response = build_response(code, parsed, model, allow_libraries, started)?;
     let body = serde_json::to_string(&response).map_err(|e| e.to_string())?;
     let _ = tx.send(Ok(Event::default().event("done").data(body))).await;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Follow-up questions.
+//
+// The student can ask about the whole refactor or about one tagged change. The
+// answer is prose, so it streams as it is written rather than arriving as JSON.
+//
+// The server keeps no session, like the rest of the app: the browser sends the
+// refactor and the conversation so far with every question. That costs some
+// tokens on a long chat, and in return there is nothing stored and nothing to
+// clean up.
+// ---------------------------------------------------------------------------
+
+/// One lesson the student tagged, as sent by the browser.
+#[derive(Deserialize)]
+struct TaggedLesson {
+    #[serde(default)]
+    number: usize,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    category: String,
+    #[serde(default)]
+    what: String,
+    #[serde(default)]
+    why: String,
+    #[serde(default)]
+    concept: Option<analysis::Concept>,
+}
+
+#[derive(Deserialize)]
+struct Turn {
+    #[serde(default)]
+    question: String,
+    #[serde(default)]
+    answer: String,
+}
+
+#[derive(Deserialize)]
+struct FollowUpRequest {
+    question: String,
+    provider: ProviderConfig,
+    #[serde(flatten)]
+    options: Options,
+    /// The refactor being discussed.
+    language: String,
+    original_code: String,
+    improved_code: String,
+    summary: String,
+    #[serde(default)]
+    change_titles: Vec<String>,
+    /// The change the question is about, if the student tagged one.
+    #[serde(default)]
+    lesson: Option<TaggedLesson>,
+    /// Earlier questions and answers, oldest first.
+    #[serde(default)]
+    history: Vec<Turn>,
+}
+
+/// Longest question we accept, so a pasted file cannot stand in for one.
+const MAX_QUESTION_CHARS: usize = 2_000;
+/// How many earlier turns to replay. Enough to follow a thread, short enough
+/// that a long chat does not outgrow the model's context.
+const MAX_HISTORY_TURNS: usize = 6;
+
+async fn follow_up(State(s): State<Shared>, Json(req): Json<FollowUpRequest>) -> Response {
+    let question = req.question.trim().to_string();
+    if question.is_empty() {
+        return error(StatusCode::BAD_REQUEST, "Type a question first.");
+    }
+    if question.chars().count() > MAX_QUESTION_CHARS {
+        return error(
+            StatusCode::BAD_REQUEST,
+            format!("That's a long question. Keep it under {MAX_QUESTION_CHARS} characters."),
+        );
+    }
+
+    let (tx, rx) = mpsc::channel::<Result<Event, Infallible>>(8);
+    let shared = s.clone();
+    tokio::spawn(async move {
+        if let Err(msg) = run_follow_up(&shared, req, question, &tx).await {
+            let _ = tx.send(Ok(Event::default().event("error").data(msg))).await;
+        } else {
+            // SSE events with no data line are dropped by clients, so send a
+            // word rather than an empty payload: the page uses this to know the
+            // answer is complete even if the connection lingers.
+            let _ = tx.send(Ok(Event::default().event("done").data("ok"))).await;
+        }
+    });
+
+    let stream = unfold(rx, |mut rx| async move {
+        rx.recv().await.map(|item| (item, rx))
+    });
+    Sse::new(stream)
+        .keep_alive(axum::response::sse::KeepAlive::default())
+        .into_response()
+}
+
+async fn run_follow_up(
+    s: &AppState,
+    req: FollowUpRequest,
+    question: String,
+    tx: &mpsc::Sender<Result<Event, Infallible>>,
+) -> Result<(), String> {
+    // Demo mode has no model. The built-in answer explains this, so the page
+    // can still show the panel instead of a bare error.
+    if req.provider.kind == ProviderKind::Demo {
+        return Err(
+            "Demo mode can't answer questions. Pick a real model in settings, then ask again."
+                .to_string(),
+        );
+    }
+
+    let lesson = req.lesson.as_ref().map(|l| prompt::LessonContext {
+        number: l.number,
+        title: l.title.clone(),
+        category: l.category.clone(),
+        what: l.what.clone(),
+        why: l.why.clone(),
+        concept: l
+            .concept
+            .as_ref()
+            .map(|c| (c.name.clone(), c.explanation.clone())),
+    });
+
+    let system = prompt::follow_up_system_prompt(&req.options, lesson.is_some());
+
+    // Turn one: the refactor itself. Later turns: the back-and-forth, so the
+    // model can follow "why?" and "what about the other one?".
+    let mut messages = vec![Msg::user(prompt::follow_up_context(
+        &req.language,
+        &req.original_code,
+        &req.improved_code,
+        &req.summary,
+        &req.change_titles,
+    ))];
+    let start = req.history.len().saturating_sub(MAX_HISTORY_TURNS);
+    for turn in &req.history[start..] {
+        if !turn.question.trim().is_empty() {
+            messages.push(Msg::user(turn.question.clone()));
+        }
+        if !turn.answer.trim().is_empty() {
+            messages.push(Msg::assistant(turn.answer.clone()));
+        }
+    }
+    messages.push(Msg::user(prompt::follow_up_question(
+        &question,
+        lesson.as_ref(),
+    )));
+
+    let mut on_delta = |piece: &str| {
+        // try_send: if the page is behind, drop a frame rather than block the
+        // model. The text is cumulative, so a dropped frame loses nothing.
+        let _ = tx.try_send(Ok(Event::default().event("delta").data(piece)));
+    };
+    let done = llm::complete_streaming(
+        &s.http,
+        &req.provider,
+        &s.settings,
+        &system,
+        &messages,
+        &mut on_delta,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
+    if done.truncated {
+        return Err(
+            "The model ran out of room while answering. Ask a shorter question.".to_string(),
+        );
+    }
+    if done.text.trim().is_empty() {
+        return Err("The model did not answer. Try again, or try a stronger model.".to_string());
+    }
     Ok(())
 }

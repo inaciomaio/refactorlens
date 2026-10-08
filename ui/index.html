@@ -168,6 +168,28 @@
           </div>
         </div>
       </div>
+
+      <!-- Follow-up questions about the refactor, or about one tagged lesson. -->
+      <section class="ask" id="ask" aria-labelledby="ask-title">
+        <div class="ask-head">
+          <h3 id="ask-title">Ask about this</h3>
+          <p class="option-help">Ask anything about the changes. Tag a lesson to ask about that one.</p>
+        </div>
+        <ol class="ask-log" id="ask-log"></ol>
+        <form class="ask-form" id="ask-form">
+          <div class="ask-tag" id="ask-tag" hidden>
+            <span>About lesson <strong id="ask-tag-name"></strong></span>
+            <button class="btn-link" type="button" id="ask-untag">Ask about the whole refactor</button>
+          </div>
+          <div class="ask-input">
+            <textarea id="ask-question" rows="2" spellcheck="true"
+              placeholder="e.g. Why is this faster? What would break here?"
+              aria-label="Your question"></textarea>
+            <button class="btn-primary" id="ask-send" type="submit">Ask</button>
+          </div>
+          <p class="ask-hint" id="ask-hint">Answers come from the model you chose. Nothing is stored on the server.</p>
+        </form>
+      </section>
     </section>
   </main>
 

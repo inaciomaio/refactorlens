@@ -16,6 +16,8 @@ RefactorLens is a teaching tool, not just a rewriter. A language model improves 
 - **Honest about side effects.** Anything the new code does differently is listed under "Check before you use it".
 - **Any language.** Python, JavaScript, Rust, Go, C++ and more.
 - **Your choice of model.** Ollama (local, free, private), Anthropic Claude, or any OpenAI-compatible server (OpenAI, OpenRouter, LM Studio, llama.cpp, vLLM…).
+- **Ask follow-up questions.** Ask about the whole refactor, or tag a lesson and ask about that change. Answers arrive as they are written.
+- **Practise what you read.** Turn a run into a few short questions, and the tool remembers which ideas you keep missing.
 - **One small binary.** The interface, fonts and syntax highlighter are built in. Nothing to install, and it works offline with Ollama.
 
 ## Tech stack
@@ -118,7 +120,7 @@ browser ──► POST /api/improve ──► prompt.rs builds a "teacher" promp
 | --- | --- |
 | `src/main.rs` | HTTP server, routes, request flow |
 | `src/prompt.rs` | The instructions given to the model. The most important file to tune. |
-| `src/llm.rs` | One function per provider |
+| `src/llm.rs` | One function per provider, plus their streaming variants |
 | `src/analysis.rs` | JSON extraction, snippet location, diffing, with unit tests |
 | `src/demo.rs` | The built-in example and its recorded answer |
 | `ui/` | Plain HTML, CSS and JavaScript. No build step. |
